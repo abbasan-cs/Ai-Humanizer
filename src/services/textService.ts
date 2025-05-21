@@ -1,9 +1,14 @@
 import { supabase } from '../lib/supabaseClient';
 import toast from 'react-hot-toast';
 
+import { supabase } from '../lib/supabaseClient';
+import toast from 'react-hot-toast';
+
 export async function humanizeText(userId: string, originalText: string): Promise<string | null> {
+  console.log("🟢 Starting humanizeText for user:", userId);
+
   try {
-    // 1. Check credits
+    // STEP 1: Validate credits
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('credits')
@@ -11,14 +16,21 @@ export async function humanizeText(userId: string, originalText: string): Promis
       .single();
 
     if (profileError) throw profileError;
+    if (!profile || typeof profile.credits !== 'number') {
+      throw new Error('Profile not found or malformed.');
+    }
+
     if (profile.credits <= 0) {
       toast.error('You have no credits left. Please upgrade your plan.');
       return null;
     }
 
     const apiKey = import.meta.env.VITE_UNDETECTABLE_API_KEY;
+    if (!apiKey) {
+      throw new Error('Missing Undetectable API key.');
+    }
 
-    // 2. Submit text to Undetectable API
+    // STEP 2: Submit to Undetectable
     const submitResponse = await fetch('https://humanize.undetectable.ai/submit', {
       method: 'POST',
       headers: {
@@ -34,17 +46,27 @@ export async function humanizeText(userId: string, originalText: string): Promis
       }),
     });
 
-    const submitData = await submitResponse.json();
-    const documentId = submitData.id;
-
-    if (!documentId) {
-      throw new Error('No document ID returned from Undetectable API.');
+    let submitData;
+    try {
+      submitData = await submitResponse.json();
+    } catch {
+      throw new Error('Failed to parse response from Undetectable.');
     }
 
-    // 3. Poll until it's ready
+    const documentId = submitData?.id;
+    if (!documentId) {
+      console.error("❌ No document ID returned", submitData);
+      throw new Error('Undetectable API did not return a document ID.');
+    }
+
+    console.log("📨 Document ID:", documentId);
+
+    // STEP 3: Poll for output
     let humanizedText: string | null = null;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await new Promise((res) => setTimeout(res, 10000)); // wait 10 seconds
+
+    for (let i = 0; i < 6; i++) {
+      console.log(`⏳ Polling attempt ${i + 1}...`);
+      await new Promise((res) => setTimeout(res, 10000));
 
       const statusResponse = await fetch('https://humanize.undetectable.ai/document', {
         method: 'POST',
@@ -55,18 +77,26 @@ export async function humanizeText(userId: string, originalText: string): Promis
         body: JSON.stringify({ id: documentId }),
       });
 
-      const statusData = await statusResponse.json();
+      let statusData;
+      try {
+        statusData = await statusResponse.json();
+      } catch {
+        console.warn('⚠️ Polling response not JSON:', await statusResponse.text());
+        continue;
+      }
+
       if (statusData.status === 'done' && statusData.output) {
         humanizedText = statusData.output;
+        console.log('✅ Humanized output received.');
         break;
       }
     }
 
     if (!humanizedText) {
-      throw new Error('Humanized text not ready. Please try again later.');
+      throw new Error('Humanized text was not ready after polling.');
     }
 
-    // 4. Save to Supabase
+    // STEP 4: Save result to Supabase
     const { error: insertError } = await supabase
       .from('humanized_texts')
       .insert([
@@ -78,7 +108,7 @@ export async function humanizeText(userId: string, originalText: string): Promis
       ]);
     if (insertError) throw insertError;
 
-    // 5. Deduct 1 credit
+    // STEP 5: Deduct 1 credit
     const { error: updateError } = await supabase
       .from('profiles')
       .update({ credits: profile.credits - 1 })
@@ -87,11 +117,12 @@ export async function humanizeText(userId: string, originalText: string): Promis
 
     return humanizedText;
   } catch (error: any) {
-    console.error('❌ Error humanizing text:', error.message);
+    console.error('❌ Error humanizing text:', error?.message || error);
     toast.error('Failed to humanize text. Please try again.');
     return null;
   }
 }
+
 
 export async function getUserHistory(userId: string) {
   try {
