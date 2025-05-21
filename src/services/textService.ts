@@ -26,6 +26,7 @@ export async function humanizeText(userId: string, originalText: string): Promis
     }
 
     const apiKey = import.meta.env.VITE_UNDETECTABLE_API_KEY;
+    console.log("🔑 Loaded API Key:", apiKey);
     if (!apiKey) {
       throw new Error('Missing Undetectable API key.');
     }
