@@ -46,6 +46,7 @@ export async function humanizeText(userId: string, originalText: string): Promis
         model: 'v11',
       }),
     });
+    console.log("📨 Raw Submit Response:", await submitResponse.text()); // NOT .json() yet!
 
     let submitData;
     try {
