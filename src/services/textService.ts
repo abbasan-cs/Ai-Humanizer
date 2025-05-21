@@ -3,26 +3,27 @@ import toast from 'react-hot-toast';
 
 export async function humanizeText(userId: string, originalText: string): Promise<string | null> {
   try {
-    // Check user credits and plan
+    // 1. Check credits
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('credits, plan')
+      .select('credits')
       .eq('id', userId)
       .single();
 
     if (profileError) throw profileError;
-    
-    if (profile.plan !== 'premium' && profile.credits <= 0) {
+    if (profile.credits <= 0) {
       toast.error('You have no credits left. Please upgrade your plan.');
       return null;
     }
 
-    // Call the Undetectable API
-    const response = await fetch('https://humanize.undetectable.ai/submit', {
+    const apiKey = import.meta.env.VITE_UNDETECTABLE_API_KEY;
+
+    // 2. Submit text to Undetectable API
+    const submitResponse = await fetch('https://humanize.undetectable.ai/submit', {
       method: 'POST',
       headers: {
+        'apikey': apiKey,
         'Content-Type': 'application/json',
-        'apikey': import.meta.env.VITE_UNDETECTABLE_API_KEY,
       },
       body: JSON.stringify({
         content: originalText,
@@ -33,14 +34,39 @@ export async function humanizeText(userId: string, originalText: string): Promis
       }),
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to humanize text');
+    const submitData = await submitResponse.json();
+    const documentId = submitData.id;
+
+    if (!documentId) {
+      throw new Error('No document ID returned from Undetectable API.');
     }
 
-    const data = await response.json();
-    const humanizedText = data.humanized || data.content;
+    // 3. Poll until it's ready
+    let humanizedText: string | null = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await new Promise((res) => setTimeout(res, 10000)); // wait 10 seconds
 
-    // Save to history
+      const statusResponse = await fetch('https://humanize.undetectable.ai/document', {
+        method: 'POST',
+        headers: {
+          'apikey': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id: documentId }),
+      });
+
+      const statusData = await statusResponse.json();
+      if (statusData.status === 'done' && statusData.output) {
+        humanizedText = statusData.output;
+        break;
+      }
+    }
+
+    if (!humanizedText) {
+      throw new Error('Humanized text not ready. Please try again later.');
+    }
+
+    // 4. Save to Supabase
     const { error: insertError } = await supabase
       .from('humanized_texts')
       .insert([
@@ -52,18 +78,16 @@ export async function humanizeText(userId: string, originalText: string): Promis
       ]);
     if (insertError) throw insertError;
 
-    // Update credits only for non-premium users
-    if (profile.plan !== 'premium') {
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({ credits: profile.credits - 1 })
-        .eq('id', userId);
-      if (updateError) throw updateError;
-    }
+    // 5. Deduct 1 credit
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({ credits: profile.credits - 1 })
+      .eq('id', userId);
+    if (updateError) throw updateError;
 
     return humanizedText;
   } catch (error: any) {
-    console.error('Error humanizing text:', error.message);
+    console.error('❌ Error humanizing text:', error.message);
     toast.error('Failed to humanize text. Please try again.');
     return null;
   }
@@ -78,10 +102,11 @@ export async function getUserHistory(userId: string) {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
+    
     return data || [];
   } catch (error: any) {
-    console.error('Error fetching history:', error.message);
-    toast.error('Failed to load history');
+    console.error('Error fetching user history:', error.message);
+    toast.error('Failed to load your history.');
     return [];
   }
 }
@@ -92,15 +117,17 @@ export async function upgradeUserPlan(userId: string, plan: string, credits: num
       .from('profiles')
       .update({ 
         plan: plan,
-        credits: credits 
+        credits: credits
       })
       .eq('id', userId);
 
     if (error) throw error;
+    
+    toast.success(`Successfully upgraded to ${plan} plan!`);
     return true;
   } catch (error: any) {
     console.error('Error upgrading plan:', error.message);
-    toast.error('Failed to upgrade plan');
+    toast.error('Failed to upgrade plan. Please try again.');
     return false;
   }
 }
