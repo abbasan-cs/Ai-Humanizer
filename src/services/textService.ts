@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 
 export async function humanizeText(userId: string, originalText: string): Promise<string | null> {
   try {
+    // Check user credits and plan
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('credits, plan')
@@ -16,8 +17,28 @@ export async function humanizeText(userId: string, originalText: string): Promis
       return null;
     }
 
-    // Mock humanization for development
-    const humanizedText = `This is a humanized version of your text:\n\n${originalText}\n\nNote: This is a mock response for development purposes.`;
+    // Call the Undetectable API
+    const response = await fetch('https://humanize.undetectable.ai/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': import.meta.env.VITE_UNDETECTABLE_API_KEY,
+      },
+      body: JSON.stringify({
+        content: originalText,
+        readability: 'High School',
+        purpose: 'General Writing',
+        strength: 'More Human',
+        model: 'v11',
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to humanize text');
+    }
+
+    const data = await response.json();
+    const humanizedText = data.humanized || data.content;
 
     // Save to history
     const { error: insertError } = await supabase
