@@ -21,93 +21,97 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<any | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Initial loading state
   const navigate = useNavigate();
 
   const getProfile = useCallback(async (userId: string) => {
-    if (!userId) return null;
+    if (!userId) {
+      console.warn("getProfile called without userId.");
+      return null;
+    }
 
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id, email, credits, plan')
         .eq('id', userId)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        throw error; // Throw error to be caught by caller
+      }
       return data;
     } catch (error: any) {
-      console.error('Error fetching profile:', error.message);
+      toast.error(`Failed to load profile: ${error.message}`);
+      console.error('Profile fetch error:', error);
       return null;
     }
   }, []);
 
   useEffect(() => {
     const initSession = async () => {
-      setLoading(true);
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        setSession(session);
-        setUser(session?.user ?? null);
+      console.log('Initializing session...');
+      setLoading(true); // Start loading
 
-        if (session?.user) {
-          const profile = await getProfile(session.user.id);
-          setProfile(profile);
-        }
-      } catch (error) {
-        console.error('Session initialization error:', error);
-      } finally {
-        setLoading(false);
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log('Session data:', session);
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session?.user) {
+        console.log('User found, fetching profile...');
+        const fetchedProfile = await getProfile(session.user.id);
+        console.log('Profile data:', fetchedProfile);
+        setProfile(fetchedProfile);
+      } else {
+        console.log('No user found in session');
+        setProfile(null);
       }
+      setLoading(false); // End loading
     };
 
+    // Important: Call initSession immediately to get initial state
     initSession();
 
+    // Set up auth state change listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
-      setLoading(true);
+      setLoading(true); // Start loading for state changes
+      console.log('Auth state changed:', _event, newSession); // Debug log
+
       setSession(newSession);
       setUser(newSession?.user ?? null);
 
       if (newSession?.user) {
-        const profile = await getProfile(newSession.user.id);
-        setProfile(profile);
+        const fetchedProfile = await getProfile(newSession.user.id);
+        setProfile(fetchedProfile);
       } else {
-        setProfile(null);
+        setProfile(null); // Clear profile if user signs out
       }
-      setLoading(false);
+      setLoading(false); // End loading
     });
 
     return () => {
       subscription.unsubscribe();
     };
-  }, [getProfile]);
+  }, [getProfile]); // getProfile is a dependency because it's called inside useEffect
 
   const signUp = async (email: string, password: string) => {
     setLoading(true);
     try {
       const { data, error } = await supabase.auth.signUp({ email, password });
+
       if (error) throw error;
 
-      if (data.user) {
-        // Check if profile exists first
-        const existingProfile = await getProfile(data.user.id);
-        
-        if (!existingProfile) {
-          const { error: profileError } = await supabase
-            .from('profiles')
-            .insert([{ 
-              id: data.user.id, 
-              email: data.user.email, 
-              credits: 10, 
-              plan: 'free' 
-            }]);
+      const newUser = data.user;
+      if (newUser) {
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([{ id: newUser.id, email: newUser.email, credits: 10, plan: 'free' }]);
 
-          if (profileError) throw profileError;
-        }
-        
-        toast.success('Account created successfully!');
-        navigate('/login');
+        if (profileError) throw profileError;
+        toast.success('Account created! Please check your email for verification.'); // Often email verification is needed
       }
+      navigate('/login'); // Always redirect to login after signup
     } catch (error: any) {
       toast.error(error.message);
       console.error('Sign up error:', error);
@@ -120,15 +124,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
       if (error) throw error;
 
-      if (data.session) {
-        setSession(data.session);
-        setUser(data.session.user);
-        const profile = await getProfile(data.session.user.id);
-        setProfile(profile);
+      const currentSession = data.session;
+      const currentUser = currentSession?.user;
+
+      if (currentUser) {
+        setSession(currentSession);
+        setUser(currentUser);
+        // Important: After sign-in, refetch profile to ensure latest data
+        const fetchedProfile = await getProfile(currentUser.id);
+        setProfile(fetchedProfile);
         toast.success('Signed in successfully!');
-        navigate('/dashboard');
+        navigate('/dashboard'); // Redirect to dashboard on successful sign-in
       }
     } catch (error: any) {
       toast.error(error.message);
@@ -139,21 +148,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
-    setLoading(true);
+    setLoading(true); // Start loading during sign out process
     try {
       const { error } = await supabase.auth.signOut();
+
       if (error) throw error;
 
+      // Clear all auth-related states immediately on successful signOut
       setSession(null);
       setUser(null);
       setProfile(null);
       toast.success('Signed out successfully!');
-      navigate('/');
+      navigate('/login'); // Navigate to login page
     } catch (error: any) {
-      toast.error(error.message);
+      toast.error(`Failed to sign out: ${error.message}`);
       console.error('Sign out error:', error);
     } finally {
-      setLoading(false);
+      setLoading(false); // End loading
     }
   };
 
